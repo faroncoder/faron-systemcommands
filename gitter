@@ -1,0 +1,411 @@
+#!/usr/bin/env ruby
+
+# Originally -- by Dave Deriso -- deriso@gmail.com
+# If you contribute, put your name here!
+
+#----------------------------------------------------------------------
+#your username here
+#@user = `echo $USER`.strip()
+@user = "faroncoder"
+#----------------------------------------------------------------------
+#the verison of this app
+@version = "0.1"
+
+#----------------------------------------------------------------------
+#some global params
+@create = false
+@migrate = false
+@update = false
+@update_message_default = "updates via gitter"
+@update_message = @update_message_default
+@debug = false
+@done = false
+@print = false
+@error = false
+
+#----------------------------------------------------------------------
+#fancy schmancy color scheme
+
+class String; def c(cc); "\e[#{cc}m#{self}\e[0m" end end
+#200.to_i.times{ |i| print i.to_s.c(i) + " " }; puts
+@sep = "-".c(90)*95
+@sep_pref = ".".c(90)*95
+@sep_thick = "+".c(90)*95
+
+#----------------------------------------------------------------------
+# greetings
+
+def hello
+  puts @sep
+  puts "Go-Gitter for GitHub & BitBucket -- v.#{@version}".c(95)
+  #puts @sep_thick
+end
+
+def goodbye
+  puts @sep
+  puts "done!".c(95)
+  puts @sep
+  exit
+end
+
+def puts_title(text)
+   puts  @sep, "#{text}".c(36), @sep
+end
+
+#----------------------------------------------------------------------
+# helper methods
+
+def get_options
+  require 'optparse'
+
+  n_options = 0
+  show_options = false
+  
+  OptionParser.new do |opts|
+    opts.banner = @sep +"\nUsage: gitter [options]\n".c(36)
+    opts.version = @version
+    opts.on('-n', '--name [name]', String, 'Set the name of the new repo') { |value| @repo_name = value; n_options+=1 }
+    opts.on('-r', '--repo-hub [provider]', String, 'Where do you want this repo? GitHub = g, Bitbucket = b') { |value| providers = { "g" => "GitHub", "b" => "BitBucket"}; @repo_provider = providers[value]; n_options+=1 }
+    opts.on('-c', '--create', String, 'Create new repo') { @create = true; n_options+=1 }
+    opts.on('-m', '--migrate', String, 'Migrate existing repo to new provider') { @migrate = true; n_options+=1 }
+    opts.on('-u', '--update [optional message]', 'Update existing repo with custom or default commit message') { |value| @update_message = value || @update_message_default; @update = true; n_options+=1; }
+    opts.on('-l', '--language [language]', String, 'Set language of the new repo') { |value| @language = value.strip.downcase; n_options+=1 }
+    opts.on('-p', '--print', String, 'Pretty print log') { @print = true; n_options+=1 }
+    opts.on('-d', '--debug', 'Print commands for inspection, doesn\'t actually run them') { @debug = true; n_options+=1 }
+    opts.on_tail('-h', '--help', 'Prints this little guide') { show_options = true; n_options+=1 }
+    @opts = opts
+  end.parse!
+  
+  if show_options || n_options == 0
+    puts @opts
+    puts "\nExamples:".c(36)
+    puts "create new repo: " + "\t\tgitter -c -r b -l javascript -n node_app".c(93)
+    puts "migrate existing to GitHub: " + "\tgitter -m -r g -n node_app".c(93)
+    puts "create repo and migrate to it: " + "\tgitter -c -m -r b -l javascript -n node_app".c(93)
+    puts "update any repo: " + "\t\tgitter -u \"made it work\"".c(93) + " or " + "gitter -u".c(93)
+    puts "\nNotes:".c(36)
+    puts "You will prompted for your Github/BitBucket password"
+    puts "Username for repo is #{@user} ($USER) by default, you can change this on line 8"
+    puts "New repos are private by default"
+    puts "Doesn\'t like symbols for language (ex. use \'c\' instead of \'c++\')"
+    puts "Updating a repo has commit message \'#{@update_message}'\ by default"
+    puts @sep
+    exit
+  end
+end
+
+def get_password
+  #keeps the password from echoing so it doesn't display on the screen or history
+  stty_settings = %x[stty -g]
+   begin
+    %x[stty -echo]
+    pass = STDIN.gets.strip().scan(/[[:print:]]/).join
+  ensure
+    %x[stty #{stty_settings}]
+  end
+  puts #add a newline for the terminal output to stay neat
+  return pass
+end
+
+#----------------------------------------------------------------------
+# git helper methods
+
+def gitter(user, pw, repo)
+  #curl -u 'USER:PASS' https://api.github.com/user/repos -d '{"name":"REPO"}'
+  #curl -u $BB_USER:$BB_PASS -X POST https://api.bitbucket.org/1.0/repositories  -d "name=$PROJECT&scm=git"
+  
+  if @repo_provider=="GitHub"     
+     if @language
+       %q[curl -u ] + user + ":" + pw + %q[ https://api.github.com/user/repos -d '{"name":"] + repo + %q[","private":false,"language":"] + @language + %q["}']
+     else
+       %q[curl -u ] + user + ":" + pw + %q[ https://api.github.com/user/repos -d '{"name":"] + repo + %q[","private":false}']
+     end
+  elsif @repo_provider=="BitBucket"
+     if @language
+       %q[curl -u ] + user + ":" + pw + %q[ -X POST https://api.bitbucket.org/1.0/repositories -d "name=] + repo + %q[&scm=git&is_private=true&language=] + @language + %q["]
+     else
+       %q[curl -u ] + user + ":" + pw + %q[ -X POST https://api.bitbucket.org/1.0/repositories -d "name=] + repo + %q[&scm=git&is_private=true"]
+     end
+  end
+  
+end
+
+def git_init
+  "git init"
+end
+
+def git_generate_origin(user, repo)
+  if @repo_provider=="GitHub"
+    "git@github.com:" + @user + "/#{repo}.git"
+  elsif @repo_provider=="BitBucket"
+    "git@bitbucket.org:" + @user + "/#{repo}.git"
+  end
+end
+
+def git_log_pretty_print
+  %q[git log --pretty=format:"%h - %an, %ar : %s" --graph]
+end
+
+def git_generate_origin_url(user, repo)
+  if @repo_provider=="GitHub"
+    "https://github.com/" + @user + "/#{repo}.git"
+  elsif @repo_provider=="BitBucket"
+    "https://bitbucket.org/" + @user + "/#{repo}.git"
+  end
+end
+
+def git_add_origin(origin_url)
+  #git remote add origin git@github.come:USER/REPO.git
+  %q[git remote add origin ] + origin_url
+end
+
+def git_add_files
+  "git add -A" # add both created and deleted files #http://stackoverflow.com/questions/572549/difference-of-git-add-a-and-git-add
+end
+
+def git_commit(message=@update_message)
+  %q[git commit -a -m "] + message + %q["]
+  #git_commit("First commit! Hooray!!")
+end
+
+def git_push(params="-u origin master")
+  "git push " + params
+end
+
+def git_set_origin(repo_url)
+  "git remote set-url origin " + repo_url
+end
+
+def git_fetch
+  "git fetch"
+end
+
+def git_prune
+  "git remote prune origin"
+end
+
+def git_update_server_info
+  "git update-server-info"
+end
+
+def git_list_origin
+  "git config remote.origin.url"
+end
+
+# error checks
+
+def has_repo
+  File.exist?('.git')
+end
+
+def has_repo_or_error(show_error)
+  @repo_exists = has_repo
+  if !@repo_exists
+    puts "Error: no .git folder in current directory".c(91) if show_error
+    @error = true
+  end
+end
+
+def has_repo_name_or_error(show_error)
+  @repo_name_exists = !(defined?(@repo_name)).nil?
+  if !@repo_name_exists
+    puts "Error: repo name missing (-n your_name_here)".c(91) if show_error
+    @error = true
+  end
+end
+
+def has_repo_provider_or_error(show_error)
+  @repo_provider_exits = !(defined?(@repo_provider)).nil?
+  if !@repo_provider_exits
+    puts "Error: repo provider missing (-p [b or g])".c(91) if show_error
+    @error = true
+  end
+end
+
+
+#----------------------------------------------------------------------
+# main methods
+def run(commands)
+  if @debug
+    commands.each { |x| puts(x) }
+  else
+    commands.each { |x| system(x) }
+  end
+end
+
+def set_globals
+  
+  puts_title "Parameters"
+  
+  @git_origin = git_generate_origin(@user, @repo_name)
+  @git_origin_url = git_generate_origin_url(@user, @repo_name)
+  
+  puts "debug: " + @debug.to_s.c(93)
+  puts "working in: " + Dir.pwd.c(93)
+  puts "create: " + @create.to_s.c(93)
+  puts "migrate: " + @migrate.to_s.c(93)
+  puts "update: " + @update.to_s.c(93)
+  puts "language: " + @language.to_s.c(93)
+  puts "git exists: " + has_repo.to_s.c(93)
+  puts "repo name: "+ @repo_name.to_s.c(93)
+  puts "provider: " + @repo_provider.to_s.c(93)
+  puts "origin url: " + @git_origin_url.to_s.c(93)
+  puts "origin: " + @git_origin.to_s.c(93)
+  puts "pretty print log: " + @print.to_s.c(93)
+end
+
+def migrate_repo
+    
+  puts_title "Migrating Repo to #{@repo_provider}"
+  
+  #error checks
+  has_repo_or_error(true)
+  has_repo_name_or_error(true)
+  has_repo_provider_or_error(true)
+  goodbye if @error
+  
+  commands = [
+    git_list_origin,
+    git_set_origin(@git_origin_url),
+    git_list_origin,
+    git_update_server_info
+  ]
+  
+  run commands
+end
+
+def prune_repo_after_migrate
+  puts_title "Pruning Origin after Migrating to #{@repo_provider}"
+  
+  #error checks
+  has_repo_or_error(true)
+  goodbye if @error
+  
+  
+  commands = [
+    git_push,
+    git_fetch,
+    git_prune,
+    git_push
+  ]
+  
+  run commands if @migrate
+  
+end
+
+def create_repo
+  puts_title "Creating"
+  
+  #error checks
+  has_repo_name_or_error(true)
+  has_repo_provider_or_error(true)
+  goodbye if @error
+  
+  
+  # get password
+  puts "#{@repo_provider} U: " + @user
+  print "#{@repo_provider} P: "
+  #pass = STDIN.gets.strip() #remove whitespace at end
+  pass = get_password
+  puts @sep
+  
+  #puts pass
+  commands = [
+    gitter(@user, pass, @repo_name),
+    git_init,
+    git_add_origin(@git_origin),
+    git_add_files
+  ]
+
+  commands << git_commit("Commit via the fly") unless @migrate
+  commands << git_push 
+  
+  run commands
+  
+  #@done = true
+  # git init
+  # git remote add origin git@bitbucket.org:ucsd_mplab/dert.git
+  # echo "# This is my README" >> README.md
+  # git add .
+  # git commit -m "First Commit."
+  # git push -u origin master
+end
+
+def update_repo
+  puts_title "Updating"
+  
+  #error checks
+  has_repo_or_error(true)
+  goodbye if @error
+  
+  commands = [
+    git_add_files,
+    git_commit,
+    git_push
+  ]
+  
+  run commands if @update
+  
+  #  git add *
+  #  git commit -a -m "updates"
+  #  git push
+  
+  # no & for async
+  # you don't want this to bog down the connection, or lose the neat progress log on the console
+end
+
+def pretty_log
+  puts_title "Commit Log"
+  run([git_log_pretty_print])
+end
+
+#----------------------------------------------------------------------
+#sequence control
+hello
+get_options
+
+#do stuff
+set_globals
+migrate_repo if @migrate
+create_repo if @create
+update_repo if @update
+prune_repo_after_migrate if @migrate
+pretty_log if @print
+
+#peace out
+goodbye
+
+
+
+#----------------------------------------------------------------------
+#some notes
+
+# Create a new repository on the command line
+# 
+# touch README.md
+# git init
+# git add README.md
+# git commit -m "first commit"
+# git remote add origin https://github.com/dderiso/rails_crud_minimal.git
+# git push -u origin master
+# Push an existing repository from the command line
+# 
+# git remote add origin https://github.com/dderiso/rails_crud_minimal.git
+# git push -u origin master
+
+#migrate to gihub
+#git config -l
+#git config remote.origin.url
+#git remote set-url origin https://github.com/dderiso/rails_crud_minimal.git
+#git fetch
+#git remote prune origin
+#git push -u origin master
+
+
+
+
+
+
+
+
+
